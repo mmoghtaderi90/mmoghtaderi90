@@ -1,0 +1,293 @@
+import logging
+import anndata
+import anndata as ad
+import anndata2ri
+import os
+os.environ['R_HOME'] = 'C:\\Program Files\\R\\R-4.3.2'
+#os.environ['R_HOME']='C:\\Users\\mmoghtad\\AppData\\Local\\Programs\\R\R-4.3.2\\'
+import rpy2
+import rpy2.robjects as robjects
+import scanpy as sc
+# import combat as c
+import numpy as np
+# import scipy as sp
+# from scipy.io import mmread
+# from scipy.sparse import csr_matrix
+import pandas as pd
+import matplotlib
+matplotlib.use('TkAgg',force=True)  # Set the backend to TkAgg
+# from matplotlib import pyplot as pl
+import matplotlib.pyplot as plt
+# from matplotlib import rcParams
+import seaborn as sb
+# #from maren_codes import combat as c
+# from gprofiler import gprofiler
+# import warnings
+# from rpy2.rinterface import RRuntimeWarning
+from rpy2.robjects import pandas2ri
+#Data files
+sample_strings = ['Duo_M1', 'Duo_M2', 'Jej_M1', 'Jej_M2', 'Il_M1', 'Il_M2']
+sample_id_strings = ['3', '4', '5', '6', '7', '8']
+file_base = 'C:\\Users\\mmoghtad\\Desktop\\GSM'
+exp_string = '_Regional_'
+data_file_end = '_matrix.mtx'
+barcode_file_end = '_barcodes.tsv'
+gene_file_end = '_genes.tsv'
+# Automatically convert rpy2 outputs to pandas dataframes
+pandas2ri.activate()
+anndata2ri.activate()
+
+plt.rcParams['figure.figsize']=(8,8) #rescale figures
+sc.settings.verbosity = 3
+#sc.set_figure_params(dpi=200, dpi_save=300)
+sc.logging.print_versions()
+
+#First data set load & annotation
+#Parse Filenames
+sample = sample_strings.pop(0)
+sample_id = sample_id_strings.pop(0)
+data_file = file_base+sample_id+exp_string+sample+data_file_end
+barcode_file = file_base+sample_id+exp_string+sample+barcode_file_end
+gene_file = file_base+sample_id+exp_string+sample+gene_file_end
+
+#Load data
+adata = sc.read(data_file, cache=True)
+adata = adata.transpose()
+adata.X = adata.X.toarray()
+
+barcodes = pd.read_csv(barcode_file, header=None, sep='\t')
+genes = pd.read_csv(gene_file, header=None, sep='\t')
+print(genes.columns)
+
+#Annotate data
+barcodes.rename(columns={0:'barcode'}, inplace=True)
+barcodes.set_index('barcode', inplace=True)
+adata.obs = barcodes
+adata.obs['sample'] = [sample]*adata.n_obs
+adata.obs['region'] = [sample.split("_")[0]]*adata.n_obs
+adata.obs['donor'] = [sample.split("_")[1]]*adata.n_obs
+genes.rename(columns={0:'gene_id', 1:'gene_symbol'}, inplace=True)
+genes.set_index('gene_symbol', inplace=True)
+adata.var = genes
+adata.var_names_make_unique()
+print(genes.head)
+print(barcodes.head)
+
+adata_list = []
+# Loop to load rest of data sets
+for i in range(len(sample_strings)):
+    # Parse Filenames
+    sample = sample_strings[i]
+    sample_id = sample_id_strings[i]
+    data_file = file_base + sample_id + exp_string + sample + data_file_end
+    barcode_file = file_base + sample_id + exp_string + sample + barcode_file_end
+    gene_file = file_base + sample_id + exp_string + sample + gene_file_end
+
+    # Load data
+    adata_tmp = sc.read(data_file)
+    adata_tmp = adata_tmp.transpose()
+    adata_tmp.X = adata_tmp.X.toarray()
+
+    barcodes_tmp = pd.read_csv(barcode_file, header=None, sep='\t')
+    genes_tmp = pd.read_csv(gene_file, header=None, sep='\t')
+
+    # Annotate data
+    barcodes_tmp.rename(columns={0: 'barcode'}, inplace=True)
+    barcodes_tmp['barcode'] = barcodes_tmp['barcode']+sample
+    barcodes_tmp.set_index('barcode', inplace=True)
+    adata_tmp.obs = barcodes_tmp
+    adata_tmp.obs['sample'] = [sample] * adata_tmp.n_obs
+    adata_tmp.obs['region'] = [sample.split("_")[0]] * adata_tmp.n_obs
+    adata_tmp.obs['donor'] = [sample.split("_")[1]] * adata_tmp.n_obs
+
+    genes_tmp.rename(columns={0: 'gene_id', 1: 'gene_symbol'}, inplace=True)
+    genes_tmp.set_index('gene_symbol', inplace=True)
+    adata_tmp.var = genes_tmp
+    adata_tmp.var_names_make_unique()
+    adata_list.append(adata_tmp)
+
+# Concatenate to main adata object
+adata_merged = ad.concat([adata]+adata_list, join='inner', merge='same', axis=0)
+    # adata = adata.concatenate(adata_tmp, batch_key='sample')
+if 'gene_id-1' in adata_merged.var.columns:
+    adata_merged.var['gene_id'] = adata.var['gene_id-1']
+    adata_merged.var.drop(columns=['gene_id-1', 'gene_id-0'], inplace=True)
+#adata_merged.obs.drop(columns=['sample'], inplace=True)
+adata_merged.obs_names = [c.split("-")[0] for c in adata_merged.obs_names]
+adata_merged.obs_names_make_unique(join='_')
+
+#save the .h5ad file
+file_path = 'C:\\Users\\mmoghtad\\Desktop\\adata_merged.h5ad'
+adata_merged.write(file_path)
+print(f"File saved as {file_path}")
+
+
+#Assign variable names and gene id columns
+adata_merged.var_names = [g.split("_")[1] if "_" in g else g for g in adata_merged.var_names]
+adata_merged.var['gene_id'] = [g.split("_")[1] if "_" in g else g for g in adata_merged.var['gene_id']]
+
+print(adata_merged.obs['region'].value_counts())
+print('')
+print(adata_merged.obs['donor'].value_counts())
+print('')
+print(adata_merged.obs['sample'].value_counts())
+
+# Checking the total size of the data set
+adata_merged.shape
+
+# Quality control - calculate QC covariates
+adata_merged.obs['n_counts'] = adata_merged.X.sum(1)
+adata_merged.obs['log_counts'] = np.log(adata_merged.obs['n_counts'])
+adata_merged.obs['n_genes'] = (adata_merged.X > 0).sum(1)
+
+mt_gene_mask = [gene.startswith('mt-') for gene in adata_merged.var_names]
+adata_merged.obs['mt_frac'] = adata_merged.X[:, mt_gene_mask].sum(1)/adata_merged.obs['n_counts']
+
+
+# Quality control - plot QC metrics
+#Sample quality plots
+import scanpy as sc
+t1 = sc.pl.violin(adata_merged, 'n_counts', groupby='sample', size=2, log=True, cut=0)
+t2 = sc.pl.violin(adata_merged, 'mt_frac', groupby='sample')
+
+#Data quality summary plots
+p1 = sc.pl.scatter(adata, 'n_counts', 'n_genes', color='mt_frac')
+p2 = sc.pl.scatter(adata[adata.obs['n_counts']<10000], 'n_counts', 'n_genes', color='mt_frac')
+
+#Thresholding decision: counts
+import seaborn
+p3 = sb.histplot(adata.obs['n_counts'], kde=False)
+plt.show()
+
+p4 = sb.histplot(adata.obs['n_counts'][adata.obs['n_counts']<4000], kde=False, bins=60)
+plt.show()
+
+p5 = sb.histplot(adata.obs['n_counts'][adata.obs['n_counts']>10000], kde=False, bins=60)
+plt.show()
+
+#Thresholding decision: genes
+p6 = sb.histplot(adata.obs['n_genes'], kde=False, bins=60)
+plt.show()
+
+p7 = sb.histplot(adata.obs['n_genes'][adata.obs['n_genes']<1000], kde=False, bins=60)
+plt.show()
+
+# Filter cells according to identified QC thresholds:
+print('Total number of cells: {:d}'.format(adata.n_obs))
+
+sc.pp.filter_cells(adata, min_counts = 1500)
+print('Number of cells after min count filter: {:d}'.format(adata.n_obs))
+
+sc.pp.filter_cells(adata, max_counts = 40000)
+print('Number of cells after max count filter: {:d}'.format(adata.n_obs))
+
+adata = adata[adata.obs['mt_frac'] < 0.2]
+print('Number of cells after MT filter: {:d}'.format(adata.n_obs))
+
+sc.pp.filter_cells(adata, min_genes = 700)
+print('Number of cells after gene filter: {:d}'.format(adata.n_obs))
+
+
+#Filter genes:
+print('Total number of genes: {:d}'.format(adata.n_vars))
+
+# Min 20 cells - filters out 0 count genes
+sc.pp.filter_genes(adata, min_cells=20)
+print('Number of genes after cell filter: {:d}'.format(adata.n_vars))
+
+#Perform a clustering for scran normalization in clusters
+adata_pp = adata_merged.copy()
+sc.pp.normalize_per_cell(adata_pp, counts_per_cell_after=1e6)
+sc.pp.log1p(adata_pp)
+sc.pp.pca(adata_pp, n_comps=15)
+sc.pp.neighbors(adata_pp)
+#sc.tl.kmeans(adata_pp, key_added='groups', resolution=0.5) this line couldnt execute in python 3...
+#so we can do something instead:
+
+
+from sklearn.cluster import KMeans
+
+# Assuming adata_pp.X is your dataset
+X = adata_pp.X
+# Define the number of clusters
+n_clusters = 10
+# Initialize KMeans
+kmeans = KMeans(n_clusters=n_clusters, random_state=10)
+# Fit KMeans on your data
+kmeans.fit(X)
+# Get cluster labels
+cluster_labels = kmeans.labels_
+# Add the cluster labels to adata_pp.obs
+adata_pp.obs['groups'] = cluster_labels
+
+#X = adata_pp.X
+# Define the number of clusters
+#n_clusters = 10
+# Randomly initialize cluster centers
+#np.random.seed(40)
+#cluster_centers = X[np.random.choice(X.shape[0], n_clusters, replace=False)]
+# Assign each data point to the nearest cluster center
+#cluster_labels = np.argmin(np.linalg.norm(X[:, None] - cluster_centers, axis=2), axis=1)
+# Add the cluster labels to adata_pp.obs
+#adata_pp.obs['groups'] = cluster_labels
+
+#Preprocess variables for scran normalization
+input_groups = adata_pp.obs['groups']
+data_mat = adata.X.T
+
+
+import numpy as np
+def compute_size_factors(data_mat):
+
+        # Ensure data_mat is a numpy array
+        if not isinstance(data_mat, np.ndarray):
+            data_mat = np.array(data_mat)
+
+        # Filter out genes with zero expression across all cells
+        non_zero_genes = np.any(data_mat > 0, axis=1)
+        data_mat_filtered = data_mat[non_zero_genes]
+
+        # Calculate the geometric mean per gene
+        geometric_mean = np.exp(np.log(data_mat_filtered).mean(axis=1))
+
+        # Replace zeros with ones to avoid division by zero
+        geometric_mean[geometric_mean == 0] = 1
+
+        # Compute size factors as the median of each cell's ratios to the geometric means
+        size_factors = np.median(data_mat_filtered / geometric_mean[:, None], axis=0)
+
+        return size_factors
+
+
+# Compute size factors
+size_factors = compute_size_factors(data_mat)
+
+
+
+#Delete adata_pp
+del adata_pp
+
+# Visualize the estimated size factors
+adata.obs['size_factors'] = size_factors
+
+sc.pl.scatter(adata, 'size_factors', 'n_counts')
+sc.pl.scatter(adata, 'size_factors', 'n_genes')
+
+sb.histplot(size_factors, bins=50, kde=False)
+plt.show()
+
+#Keep the count data in a counts layer
+adata.layers["counts"] = adata.X.copy()
+
+#Normalize adata
+adata.X /= adata.obs['size_factors'].values[:,None]
+sc.pp.log1p(adata)
+
+# Store the full data set in 'raw' as log-normalised data for statistical testing
+adata.raw = adata
+
+# ComBat batch correction
+sc.pp.combat(adata, key='sample')
+
+sc.pp.highly_variable_genes(adata, flavor='cell_ranger', n_top_genes=4000)
+print('\n','Number of highly variable genes: {:d}'.format(np.sum(adata.var['highly_variable'])))
